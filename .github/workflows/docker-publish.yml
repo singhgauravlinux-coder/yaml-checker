@@ -60,8 +60,9 @@ jobs:
       - name: Update image tag in k8s manifests
         if: github.event_name != 'pull_request'
         run: |
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          NEW_TAG="sha-${SHORT_SHA}"
+          # Must match the tag docker/metadata-action actually publishes
+          # (type=sha,format=short,prefix= -> bare short SHA, e.g. "eaff408").
+          NEW_TAG=$(git rev-parse --short HEAD)
           sed -i "s#^    newTag: .*#    newTag: ${NEW_TAG}#" k8s/kustomization.yaml
           sed -i "s#image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:.*#image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${NEW_TAG}#" k8s/deployment.yaml
           echo "NEW_TAG=${NEW_TAG}" >> "$GITHUB_ENV"
