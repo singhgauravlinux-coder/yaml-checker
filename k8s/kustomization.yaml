@@ -15,4 +15,4 @@ resources:
 images:
   - name: ghcr.io/singhgauravlinux-coder/plumb
     newName: ghcr.io/singhgauravlinux-coder/plumb
-    newTag: c267ed1
+    newTag: 85ca7ec

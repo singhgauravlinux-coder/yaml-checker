@@ -39,7 +39,7 @@ spec:
       containers:
         - name: web
           # Replace with your registry; kustomization.yaml sets the tag in one place.
-          image: ghcr.io/singhgauravlinux-coder/plumb:c267ed1
+          image: ghcr.io/singhgauravlinux-coder/plumb:85ca7ec
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
