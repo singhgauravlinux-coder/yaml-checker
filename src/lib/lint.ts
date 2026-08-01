@@ -157,19 +157,38 @@ const KNOWN_KINDS: Record<string, string> = Object.fromEntries(
 
 interface TopLevelValue {
   line: Line;
-  key: string;
+  key: string; // the key as actually written in the document (may be wrong-case)
   value: string;
 }
 
-/** Finds a `key: value` pair at column 0 (document root), ignoring quotes around the value. */
-function findTopLevelKey(lines: Line[], key: string): TopLevelValue | undefined {
-  const re = new RegExp(`^${key}:\\s*(.+?)\\s*(#.*)?$`);
+/**
+ * Finds a `key: value` pair at column 0 (document root), matching the key
+ * case-insensitively so a wrong-case key (e.g. `apiversion:`) is still found —
+ * Kubernetes field names are case-sensitive, so this is itself worth flagging.
+ */
+function findTopLevelKey(lines: Line[], canonicalKey: string): TopLevelValue | undefined {
+  const re = /^([A-Za-z][A-Za-z0-9_-]*):\s*(.+?)\s*(#.*)?$/;
   for (const l of lines) {
     if (l.ignore || l.indent !== 0) continue;
     const m = re.exec(l.body);
-    if (m) return { line: l, key, value: m[1].replace(/^["']|["']$/g, '') };
+    if (m && m[1].toLowerCase() === canonicalKey.toLowerCase()) {
+      return { line: l, key: m[1], value: m[2].replace(/^["']|["']$/g, '') };
+    }
   }
   return undefined;
+}
+
+/** Builds a Problem pointing at the key portion of a `key: value` line. */
+function keyProblem(kv: TopLevelValue, message: string, rule: string, severity: Severity): Problem {
+  return {
+    severity,
+    rule,
+    message,
+    line: kv.line.n,
+    column: kv.line.indent + 1,
+    endLine: kv.line.n,
+    endColumn: kv.line.indent + kv.key.length + 1,
+  };
 }
 
 /** Builds a Problem pointing at the value portion of a `key: value` line. */
@@ -202,6 +221,22 @@ function lintKubernetes(lines: Line[]): Problem[] {
   const kind = findTopLevelKey(lines, 'kind');
   const apiVersion = findTopLevelKey(lines, 'apiVersion');
   if (!kind && !apiVersion) return problems;
+
+  if (kind && kind.key !== 'kind') {
+    problems.push(
+      keyProblem(kind, `Kubernetes field names are case-sensitive. "${kind.key}" should be "kind".`, 'k8s-field-case', 'error')
+    );
+  }
+  if (apiVersion && apiVersion.key !== 'apiVersion') {
+    problems.push(
+      keyProblem(
+        apiVersion,
+        `Kubernetes field names are case-sensitive. "${apiVersion.key}" should be "apiVersion".`,
+        'k8s-field-case',
+        'error'
+      )
+    );
+  }
 
   let properKind: string | undefined;
 
