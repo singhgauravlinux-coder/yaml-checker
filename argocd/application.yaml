@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: plumb
+  namespace: argocd
+  finalizers:
+    # Ensures ArgoCD cleans up the deployed resources when this Application is deleted.
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/singhgauravlinux-coder/yaml-checker.git
+    targetRevision: main
+    path: k8s
+    # k8s/kustomization.yaml is what makes this a kustomize app; ArgoCD auto-detects it.
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: plumb
+
+  syncPolicy:
+    automated:
+      # Removes resources that are no longer defined in git.
+      prune: true
+      # Reverts any manual/out-of-band changes made directly in the cluster.
+      selfHeal: true
+    syncOptions:
+      # k8s/namespace.yaml is already in the kustomize resources list, so this
+      # is a safety net in case that ever changes.
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
