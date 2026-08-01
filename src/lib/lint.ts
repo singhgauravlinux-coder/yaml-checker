@@ -1,4 +1,5 @@
-import { LineCounter, parseDocument } from 'yaml';
+import { LineCounter, parseDocument, isMap, isSeq, isScalar } from 'yaml';
+import type { Document, YAMLMap } from 'yaml';
 
 export type Severity = 'error' | 'warning';
 
@@ -11,6 +12,12 @@ export interface Problem {
   column: number; // 1-based
   endLine: number;
   endColumn: number;
+  /**
+   * When set, the Problems panel shows a "Fix" button. Applying it re-parses the
+   * current text, makes the one targeted change, and re-serializes — comments and
+   * key order elsewhere in the file are left alone.
+   */
+  fix?: { label: string; apply: (text: string) => string };
 }
 
 export interface LintResult {
@@ -292,6 +299,232 @@ function lintKubernetes(lines: Line[]): Problem[] {
   return problems;
 }
 
+/** Kinds whose pod template must be selected by `spec.selector.matchLabels`. */
+const SELECTOR_KINDS = new Set(['Deployment', 'StatefulSet', 'DaemonSet', 'ReplicaSet']);
+/** Kinds that carry a `spec.template` pod template at all. */
+const TEMPLATE_KINDS = new Set([...SELECTOR_KINDS, 'Job']);
+
+/** Reads a YAMLMap's scalar `key: value` pairs into a plain string/string object. */
+function labelsOf(map: YAMLMap | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!map) return out;
+  for (const pair of map.items) {
+    if (isScalar(pair.key) && isScalar(pair.value)) {
+      out[String(pair.key.value)] = String(pair.value.value);
+    }
+  }
+  return out;
+}
+
+function sameLabels(a: Record<string, string>, b: Record<string, string>): boolean {
+  const ak = Object.keys(a);
+  const bk = Object.keys(b);
+  return ak.length === bk.length && ak.every((k) => a[k] === b[k]);
+}
+
+/** Builds a Problem from a parsed node's character range (falls back to line 1). */
+function nodeProblem(
+  node: unknown,
+  message: string,
+  rule: string,
+  severity: Severity,
+  counter: LineCounter,
+  fix?: Problem['fix'],
+): Problem {
+  const range = (node as { range?: readonly [number, number, number] } | undefined)?.range;
+  if (!range) {
+    return { severity, rule, message, line: 1, column: 1, endLine: 1, endColumn: 2, fix };
+  }
+  const start = counter.linePos(range[0]);
+  const end = counter.linePos(range[1]);
+  return { severity, rule, message, line: start.line, column: start.col, endLine: end.line, endColumn: end.col, fix };
+}
+
+/** Re-parses `text`, applies one targeted mutation, and re-serializes it. */
+function mutate(mutator: (doc: Document) => void): (text: string) => string {
+  return (text: string) => {
+    const doc = parseDocument(text);
+    mutator(doc);
+    return String(doc);
+  };
+}
+
+/**
+ * Deployment/StatefulSet/DaemonSet/ReplicaSet/Job all embed a pod template, and the
+ * cluster rejects the whole manifest — with an error that names none of these fields
+ * intuitively — if any of the following don't line up:
+ *  - `spec.selector` is missing (controllers other than Job require one)
+ *  - `spec.selector.matchLabels` doesn't match `spec.template.metadata.labels`
+ *  - `spec.template.spec.containers` is missing or empty
+ * This runs only once the document already parses as valid YAML, since it needs the
+ * real node tree (not just line text) to check nested structure.
+ */
+function lintWorkloadShape(doc: Document, counter: LineCounter): Problem[] {
+  const problems: Problem[] = [];
+  const root = doc.contents;
+  if (!isMap(root)) return problems;
+
+  const kindPair = root.items.find((p) => isScalar(p.key) && p.key.value === 'kind');
+  const kind = kindPair && isScalar(kindPair.value) ? String(kindPair.value.value) : undefined;
+  if (!kind || !TEMPLATE_KINDS.has(kind)) return problems;
+
+  const specPair = root.items.find((p) => isScalar(p.key) && p.key.value === 'spec');
+  const spec = specPair && isMap(specPair.value) ? specPair.value : undefined;
+  if (!spec) {
+    problems.push(nodeProblem(kindPair?.value, `"${kind}" needs a "spec" section with a pod "template".`, 'k8s-missing-spec', 'error', counter));
+    return problems;
+  }
+
+  const templatePair = spec.items.find((p) => isScalar(p.key) && p.key.value === 'template');
+  const template = templatePair && isMap(templatePair.value) ? templatePair.value : undefined;
+
+  const templateMetaPair = template?.items.find((p) => isScalar(p.key) && p.key.value === 'metadata');
+  const templateMeta = templateMetaPair && isMap(templateMetaPair.value) ? templateMetaPair.value : undefined;
+  const templateLabelsPair = templateMeta?.items.find((p) => isScalar(p.key) && p.key.value === 'labels');
+  const templateLabels = templateLabelsPair && isMap(templateLabelsPair.value) ? templateLabelsPair.value : undefined;
+
+  if (SELECTOR_KINDS.has(kind)) {
+    const selectorPair = spec.items.find((p) => isScalar(p.key) && p.key.value === 'selector');
+    const selector = selectorPair && isMap(selectorPair.value) ? selectorPair.value : undefined;
+    const matchLabelsPair = selector?.items.find((p) => isScalar(p.key) && p.key.value === 'matchLabels');
+    const matchLabels = matchLabelsPair && isMap(matchLabelsPair.value) ? matchLabelsPair.value : undefined;
+    const matchExpressionsPair = selector?.items.find((p) => isScalar(p.key) && p.key.value === 'matchExpressions');
+
+    if (!selector) {
+      problems.push(
+        nodeProblem(
+          specPair?.value,
+          `"${kind}" is missing "spec.selector". Kubernetes needs it to know which pods this ${kind.toLowerCase()} owns.`,
+          'k8s-missing-selector',
+          'error',
+          counter,
+          {
+            label: 'Add selector from template labels',
+            apply: mutate((d) => {
+              const labels = labelsOf(templateLabels);
+              d.setIn(['spec', 'selector', 'matchLabels'], Object.keys(labels).length ? labels : { app: 'app' });
+            }),
+          },
+        ),
+      );
+    } else if (!matchLabels && !matchExpressionsPair) {
+      problems.push(
+        nodeProblem(
+          selectorPair?.value,
+          `"spec.selector" needs "matchLabels" (or "matchExpressions") so Kubernetes knows which pods to select.`,
+          'k8s-missing-selector',
+          'error',
+          counter,
+          {
+            label: 'Add matchLabels from template labels',
+            apply: mutate((d) => {
+              const labels = labelsOf(templateLabels);
+              d.setIn(['spec', 'selector', 'matchLabels'], Object.keys(labels).length ? labels : { app: 'app' });
+            }),
+          },
+        ),
+      );
+    } else if (matchLabels && !sameLabels(labelsOf(matchLabels), labelsOf(templateLabels))) {
+      problems.push(
+        nodeProblem(
+          matchLabelsPair?.value,
+          `"spec.selector.matchLabels" doesn't match "spec.template.metadata.labels" — the ${kind.toLowerCase()} would be rejected for not selecting its own pods.`,
+          'k8s-selector-mismatch',
+          'error',
+          counter,
+          {
+            label: 'Make selector match template labels',
+            apply: mutate((d) => {
+              const freshTemplateLabels = labelsOf(templateLabels);
+              d.setIn(
+                ['spec', 'selector', 'matchLabels'],
+                Object.keys(freshTemplateLabels).length ? freshTemplateLabels : { app: 'app' },
+              );
+            }),
+          },
+        ),
+      );
+    }
+
+    if (selector && matchLabels && !templateLabels) {
+      problems.push(
+        nodeProblem(
+          (templateMetaPair ?? templatePair)?.value,
+          `"spec.template.metadata.labels" is missing. It must match "spec.selector.matchLabels" or the pods this ${kind.toLowerCase()} creates won't belong to it.`,
+          'k8s-missing-template-labels',
+          'error',
+          counter,
+          {
+            label: 'Copy labels from selector',
+            apply: mutate((d) => {
+              const labels = labelsOf(matchLabels);
+              d.setIn(['spec', 'template', 'metadata', 'labels'], Object.keys(labels).length ? labels : { app: 'app' });
+            }),
+          },
+        ),
+      );
+    }
+  }
+
+  if (!template) {
+    problems.push(
+      nodeProblem(specPair?.value, `"${kind}" is missing "spec.template", its pod template.`, 'k8s-missing-template', 'error', counter),
+    );
+    return problems;
+  }
+
+  const templateSpecPair = template.items.find((p) => isScalar(p.key) && p.key.value === 'spec');
+  const templateSpec = templateSpecPair && isMap(templateSpecPair.value) ? templateSpecPair.value : undefined;
+  if (!templateSpec) {
+    problems.push(
+      nodeProblem(
+        templatePair?.value,
+        `"spec.template" is missing its own "spec" — that's where "containers" belongs.`,
+        'k8s-missing-containers',
+        'error',
+        counter,
+      ),
+    );
+    return problems;
+  }
+
+  const containersPair = templateSpec.items.find((p) => isScalar(p.key) && p.key.value === 'containers');
+  const containers = containersPair && isSeq(containersPair.value) ? containersPair.value : undefined;
+  const defaultContainer = { name: 'app', image: 'nginx:latest' };
+
+  if (!containers) {
+    problems.push(
+      nodeProblem(
+        templateSpecPair?.value,
+        `"spec.template.spec.containers" is required — a pod template with no containers is rejected.`,
+        'k8s-missing-containers',
+        'error',
+        counter,
+        {
+          label: 'Add a placeholder container',
+          apply: mutate((d) => d.setIn(['spec', 'template', 'spec', 'containers'], [defaultContainer])),
+        },
+      ),
+    );
+  } else if (containers.items.length === 0) {
+    problems.push(
+      nodeProblem(
+        containersPair?.value,
+        `"spec.template.spec.containers" is empty — at least one container is required.`,
+        'k8s-empty-containers',
+        'error',
+        counter,
+        {
+          label: 'Add a placeholder container',
+          apply: mutate((d) => d.setIn(['spec', 'template', 'spec', 'containers'], [defaultContainer])),
+        },
+      ),
+    );
+  }
+
+  return problems;
+}
+
 export function lint(text: string): LintResult {
   const lines = scan(text);
   const indent = detectIndent(lines);
@@ -382,6 +615,7 @@ export function lint(text: string): LintResult {
 
   if (doc.errors.length === 0) {
     problems.push(...lintKubernetes(lines));
+    problems.push(...lintWorkloadShape(doc, counter));
   }
 
   problems.sort((a, b) => a.line - b.line || a.column - b.column);
