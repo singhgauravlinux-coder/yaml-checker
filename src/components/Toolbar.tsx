@@ -1,3 +1,5 @@
+import { TEMPLATES } from '../lib/templates';
+
 interface Props {
   fileName: string;
   dirty: boolean;
@@ -6,6 +8,7 @@ interface Props {
   minimap: boolean;
   problemsOpen: boolean;
   problemCount: number;
+  onNew(templateId: string): void;
   onOpen(): void;
   onSave(): void;
   onDownload(): void;
@@ -36,6 +39,29 @@ export default function Toolbar(p: Props) {
       </div>
 
       <div className="spacer" />
+
+      <div className="group">
+        <label className="select new-menu" title="Start a new file from a valid template">
+          <span>New</span>
+          <select
+            value=""
+            onChange={(e) => {
+              const id = e.target.value;
+              e.target.value = '';
+              if (id) p.onNew(id);
+            }}
+          >
+            <option value="" disabled>
+              Choose a template…
+            </option>
+            {TEMPLATES.map((t) => (
+              <option key={t.id} value={t.id} title={t.hint}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
 
       <div className="group">
         <button onClick={p.onOpen} title={`Open a file (${modifier}Shift+O)`}>

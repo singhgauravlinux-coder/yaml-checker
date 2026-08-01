@@ -3,10 +3,11 @@ import type { Problem } from '../lib/lint';
 interface Props {
   problems: Problem[];
   onGoTo(line: number, column: number): void;
+  onFix(problem: Problem): void;
   onClose(): void;
 }
 
-export default function Problems({ problems, onGoTo, onClose }: Props) {
+export default function Problems({ problems, onGoTo, onFix, onClose }: Props) {
   return (
     <aside className="panel">
       <div className="panel-head">
@@ -23,13 +24,27 @@ export default function Problems({ problems, onGoTo, onClose }: Props) {
         <ul className="problem-list">
           {problems.map((p, i) => (
             <li key={`${p.rule}-${p.line}-${p.column}-${i}`}>
-              <button className={`problem ${p.severity}`} onClick={() => onGoTo(p.line, p.column)}>
-                <span className="problem-where">
-                  {p.line}:{p.column}
-                </span>
-                <span className="problem-message">{p.message}</span>
-                <span className="problem-rule">{p.rule}</span>
-              </button>
+              <div className={`problem ${p.severity}`}>
+                <button className="problem-jump" onClick={() => onGoTo(p.line, p.column)}>
+                  <span className="problem-where">
+                    {p.line}:{p.column}
+                  </span>
+                  <span className="problem-message">{p.message}</span>
+                  <span className="problem-rule">{p.rule}</span>
+                </button>
+                {p.fix && (
+                  <button
+                    className="problem-fix"
+                    title={p.fix.label}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onFix(p);
+                    }}
+                  >
+                    Fix
+                  </button>
+                )}
+              </div>
             </li>
           ))}
         </ul>
