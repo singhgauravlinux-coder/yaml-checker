@@ -133,6 +133,102 @@ function clean(message: string): string {
   return message.split('\n')[0].replace(/\s*at line \d+, column \d+:?$/, '').trim();
 }
 
+/** Lowercase kind -> correct PascalCase, for Kubernetes' built-in resource types. */
+const KNOWN_KINDS: Record<string, string> = {
+  namespace: 'Namespace', pod: 'Pod', deployment: 'Deployment', service: 'Service',
+  configmap: 'ConfigMap', secret: 'Secret', ingress: 'Ingress', statefulset: 'StatefulSet',
+  daemonset: 'DaemonSet', replicaset: 'ReplicaSet', job: 'Job', cronjob: 'CronJob',
+  persistentvolume: 'PersistentVolume', persistentvolumeclaim: 'PersistentVolumeClaim',
+  serviceaccount: 'ServiceAccount', role: 'Role', rolebinding: 'RoleBinding',
+  clusterrole: 'ClusterRole', clusterrolebinding: 'ClusterRoleBinding',
+  networkpolicy: 'NetworkPolicy', horizontalpodautoscaler: 'HorizontalPodAutoscaler',
+  poddisruptionbudget: 'PodDisruptionBudget', endpoints: 'Endpoints', node: 'Node',
+  event: 'Event', limitrange: 'LimitRange', resourcequota: 'ResourceQuota',
+  storageclass: 'StorageClass', customresourcedefinition: 'CustomResourceDefinition',
+  replicationcontroller: 'ReplicationController',
+};
+
+interface TopLevelValue {
+  line: Line;
+  key: string;
+  value: string;
+}
+
+/** Finds a `key: value` pair at column 0 (document root), ignoring quotes around the value. */
+function findTopLevelKey(lines: Line[], key: string): TopLevelValue | undefined {
+  const re = new RegExp(`^${key}:\\s*(.+?)\\s*(#.*)?$`);
+  for (const l of lines) {
+    if (l.ignore || l.indent !== 0) continue;
+    const m = re.exec(l.body);
+    if (m) return { line: l, key, value: m[1].replace(/^["']|["']$/g, '') };
+  }
+  return undefined;
+}
+
+/** Builds a Problem pointing at the value portion of a `key: value` line. */
+function valueProblem(kv: TopLevelValue, message: string, rule: string, severity: Severity): Problem {
+  const offset = kv.line.body.indexOf(kv.value, kv.key.length);
+  const col = kv.line.indent + (offset >= 0 ? offset : kv.key.length + 2) + 1;
+  return {
+    severity,
+    rule,
+    message,
+    line: kv.line.n,
+    column: col,
+    endLine: kv.line.n,
+    endColumn: kv.line.text.length + 1,
+  };
+}
+
+/**
+ * Kubernetes-specific checks: `apiVersion`/`kind` are case-sensitive and, for built-in
+ * resources, must match an exact registered spelling. A file can be perfectly valid YAML
+ * and still be rejected by a cluster for getting this casing wrong — this rule catches
+ * that class of error before deploy time.
+ */
+function lintKubernetes(lines: Line[]): Problem[] {
+  const problems: Problem[] = [];
+  const kind = findTopLevelKey(lines, 'kind');
+  const apiVersion = findTopLevelKey(lines, 'apiVersion');
+  if (!kind && !apiVersion) return problems;
+
+  if (kind && kind.value) {
+    const proper = KNOWN_KINDS[kind.value.toLowerCase()];
+    if (proper && kind.value !== proper) {
+      problems.push(
+        valueProblem(
+          kind,
+          `Kubernetes "kind" values are case-sensitive. "${kind.value}" isn't recognized — did you mean "${proper}"?`,
+          'k8s-kind-case',
+          'error'
+        )
+      );
+    } else if (!proper && /^[a-z]/.test(kind.value)) {
+      problems.push(
+        valueProblem(
+          kind,
+          `Kubernetes "kind" values are PascalCase (e.g. "Deployment", "Service"). "${kind.value}" looks lowercase and won't match any built-in resource type.`,
+          'k8s-kind-case',
+          'warning'
+        )
+      );
+    }
+  }
+
+  if (apiVersion && /[A-Z]/.test(apiVersion.value)) {
+    problems.push(
+      valueProblem(
+        apiVersion,
+        `Kubernetes "apiVersion" values are lowercase. "${apiVersion.value}" should be "${apiVersion.value.toLowerCase()}".`,
+        'k8s-apiversion-case',
+        'error'
+      )
+    );
+  }
+
+  return problems;
+}
+
 export function lint(text: string): LintResult {
   const lines = scan(text);
   const indent = detectIndent(lines);
@@ -219,6 +315,10 @@ export function lint(text: string): LintResult {
       endLine: end.line,
       endColumn: Math.max(end.col, start.col + 1),
     });
+  }
+
+  if (doc.errors.length === 0) {
+    problems.push(...lintKubernetes(lines));
   }
 
   problems.sort((a, b) => a.line - b.line || a.column - b.column);
