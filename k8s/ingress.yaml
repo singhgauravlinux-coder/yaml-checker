@@ -1,0 +1,36 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: plumb
+  labels:
+    app.kubernetes.io/name: plumb
+  annotations:
+    # Monaco's largest asset is ~2.8 MB, so keep proxy buffers generous.
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    # Uncomment with cert-manager installed:
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: yaml.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: plumb
+                port:
+                  name: http
+  # tls:
+  #   - hosts:
+  #       - yaml.example.com
+  #     secretName: plumb-tls
+#
+# Serving under a sub-path instead of its own host: build the image with
+# --build-arg BASE_PATH=/yaml/ and swap the rule above for
+#
+#   annotations:
+#     nginx.ingress.kubernetes.io/rewrite-target: /$2
+#   path: /yaml(/|$)(.*)
+#   pathType: ImplementationSpecific

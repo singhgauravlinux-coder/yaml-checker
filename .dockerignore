@@ -1,0 +1,9 @@
+.git
+.gitignore
+node_modules
+dist
+k8s
+compose.yaml
+Makefile
+README.md
+*.log

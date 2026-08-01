@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: plumb
+  labels:
+    app.kubernetes.io/name: plumb
+    # Static file server: no privileged workloads belong in here.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
