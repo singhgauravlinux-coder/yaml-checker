@@ -6,8 +6,9 @@ import StatusBar from './components/StatusBar';
 import Toolbar from './components/Toolbar';
 import { download, openFile, saveFile, type FileHandleLike } from './lib/files';
 import { formatYaml } from './lib/format';
-import { lint, type LintResult } from './lib/lint';
+import { lint, type LintResult, type Problem } from './lib/lint';
 import { SAMPLE_YAML } from './lib/sample';
+import { TEMPLATES } from './lib/templates';
 
 type Theme = 'dark' | 'light';
 
@@ -79,6 +80,33 @@ export default function App() {
     load(file.name, file.text, file.handle);
     flash(`Opened ${file.name}`);
   }, [flash, load]);
+
+  const handleNew = useCallback(
+    (templateId: string) => {
+      const template = TEMPLATES.find((t) => t.id === templateId);
+      if (!template) return;
+      if (dirty && !window.confirm(`Discard unsaved changes in ${fileName} and start a new ${template.label}?`)) {
+        return;
+      }
+      load(template.fileName, template.yaml);
+      flash(`New ${template.label}`);
+    },
+    [dirty, fileName, flash, load],
+  );
+
+  const handleFix = useCallback(
+    (problem: Problem) => {
+      if (!problem.fix) return;
+      const current = editor.current?.getText() ?? text;
+      const fixed = problem.fix.apply(current);
+      if (fixed === current) return;
+      editor.current?.setText(fixed);
+      setText(fixed);
+      setDirty(true);
+      flash(problem.fix.label);
+    },
+    [flash, text],
+  );
 
   const handleSave = useCallback(async () => {
     const outcome = await saveFile(fileName, text, handle);
@@ -153,6 +181,7 @@ export default function App() {
         minimap={minimap}
         problemsOpen={problemsOpen}
         problemCount={result.problems.length}
+        onNew={handleNew}
         onOpen={handleOpen}
         onSave={handleSave}
         onDownload={handleDownload}
@@ -198,6 +227,7 @@ export default function App() {
           <Problems
             problems={result.problems}
             onGoTo={goTo}
+            onFix={handleFix}
             onClose={() => setProblemsOpen(false)}
           />
         )}
