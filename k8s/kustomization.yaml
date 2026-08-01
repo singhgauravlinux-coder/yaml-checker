@@ -15,4 +15,4 @@ resources:
 images:
   - name: ghcr.io/singhgauravlinux-coder/plumb
     newName: ghcr.io/singhgauravlinux-coder/plumb
-    newTag: 1.0.0
+    newTag: sha-eaff408
