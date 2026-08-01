@@ -211,6 +211,10 @@ select {
   cursor: pointer;
 }
 
+.new-menu select {
+  max-width: 120px;
+}
+
 /* ---------- problem tape (scale drawing of the file) ---------- */
 
 .tape {
@@ -320,21 +324,11 @@ select {
 }
 
 .problem {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 2px 8px;
+  display: flex;
+  align-items: stretch;
   width: 100%;
-  text-align: left;
-  background: transparent;
-  border: 0;
   border-bottom: 1px solid var(--rule);
   border-left: 2px solid transparent;
-  padding: 8px 12px;
-  cursor: pointer;
-}
-
-.problem:hover {
-  background: var(--raised);
 }
 
 .problem.error {
@@ -343,6 +337,44 @@ select {
 
 .problem.warning {
   border-left-color: var(--warn);
+}
+
+.problem-jump {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.problem-jump:hover {
+  background: var(--raised);
+}
+
+.problem-fix {
+  flex: none;
+  align-self: center;
+  margin-right: 10px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 2px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.problem-fix:hover {
+  color: var(--surface);
+  background: var(--accent);
 }
 
 .problem-where {
