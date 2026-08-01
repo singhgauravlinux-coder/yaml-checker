@@ -133,20 +133,27 @@ function clean(message: string): string {
   return message.split('\n')[0].replace(/\s*at line \d+, column \d+:?$/, '').trim();
 }
 
-/** Lowercase kind -> correct PascalCase, for Kubernetes' built-in resource types. */
-const KNOWN_KINDS: Record<string, string> = {
-  namespace: 'Namespace', pod: 'Pod', deployment: 'Deployment', service: 'Service',
-  configmap: 'ConfigMap', secret: 'Secret', ingress: 'Ingress', statefulset: 'StatefulSet',
-  daemonset: 'DaemonSet', replicaset: 'ReplicaSet', job: 'Job', cronjob: 'CronJob',
-  persistentvolume: 'PersistentVolume', persistentvolumeclaim: 'PersistentVolumeClaim',
-  serviceaccount: 'ServiceAccount', role: 'Role', rolebinding: 'RoleBinding',
-  clusterrole: 'ClusterRole', clusterrolebinding: 'ClusterRoleBinding',
-  networkpolicy: 'NetworkPolicy', horizontalpodautoscaler: 'HorizontalPodAutoscaler',
-  poddisruptionbudget: 'PodDisruptionBudget', endpoints: 'Endpoints', node: 'Node',
-  event: 'Event', limitrange: 'LimitRange', resourcequota: 'ResourceQuota',
-  storageclass: 'StorageClass', customresourcedefinition: 'CustomResourceDefinition',
-  replicationcontroller: 'ReplicationController',
+/** Proper PascalCase kind -> the apiVersion(s) it actually lives under. */
+const KIND_INFO: Record<string, string[]> = {
+  Namespace: ['v1'], Pod: ['v1'], Service: ['v1'], ConfigMap: ['v1'], Secret: ['v1'],
+  ServiceAccount: ['v1'], Endpoints: ['v1'], Node: ['v1'], LimitRange: ['v1'],
+  ResourceQuota: ['v1'], PersistentVolume: ['v1'], PersistentVolumeClaim: ['v1'],
+  ReplicationController: ['v1'], Event: ['v1', 'events.k8s.io/v1'],
+  Deployment: ['apps/v1'], StatefulSet: ['apps/v1'], DaemonSet: ['apps/v1'], ReplicaSet: ['apps/v1'],
+  Job: ['batch/v1'], CronJob: ['batch/v1'],
+  Ingress: ['networking.k8s.io/v1'], NetworkPolicy: ['networking.k8s.io/v1'],
+  Role: ['rbac.authorization.k8s.io/v1'], RoleBinding: ['rbac.authorization.k8s.io/v1'],
+  ClusterRole: ['rbac.authorization.k8s.io/v1'], ClusterRoleBinding: ['rbac.authorization.k8s.io/v1'],
+  HorizontalPodAutoscaler: ['autoscaling/v2', 'autoscaling/v1'],
+  PodDisruptionBudget: ['policy/v1'],
+  StorageClass: ['storage.k8s.io/v1'],
+  CustomResourceDefinition: ['apiextensions.k8s.io/v1'],
 };
+
+/** Lowercase kind -> correct PascalCase, derived from KIND_INFO. */
+const KNOWN_KINDS: Record<string, string> = Object.fromEntries(
+  Object.keys(KIND_INFO).map((k) => [k.toLowerCase(), k])
+);
 
 interface TopLevelValue {
   line: Line;
@@ -181,16 +188,22 @@ function valueProblem(kv: TopLevelValue, message: string, rule: string, severity
 }
 
 /**
- * Kubernetes-specific checks: `apiVersion`/`kind` are case-sensitive and, for built-in
- * resources, must match an exact registered spelling. A file can be perfectly valid YAML
- * and still be rejected by a cluster for getting this casing wrong — this rule catches
- * that class of error before deploy time.
+ * Kubernetes-specific checks:
+ *  - `apiVersion`/`kind` are case-sensitive and, for built-in resources, must match an
+ *    exact registered spelling.
+ *  - Each built-in kind lives under one specific apiVersion (e.g. Deployment is only
+ *    valid under apps/v1, never v1) — getting the kind right but the group wrong parses
+ *    fine as YAML and still gets rejected by the cluster ("groupVersion shouldn't be
+ *    empty" in Rancher, "no matches for kind" with kubectl).
+ * A file can be perfectly valid YAML and still fail on either of these before deploy.
  */
 function lintKubernetes(lines: Line[]): Problem[] {
   const problems: Problem[] = [];
   const kind = findTopLevelKey(lines, 'kind');
   const apiVersion = findTopLevelKey(lines, 'apiVersion');
   if (!kind && !apiVersion) return problems;
+
+  let properKind: string | undefined;
 
   if (kind && kind.value) {
     const proper = KNOWN_KINDS[kind.value.toLowerCase()];
@@ -203,6 +216,7 @@ function lintKubernetes(lines: Line[]): Problem[] {
           'error'
         )
       );
+      properKind = proper;
     } else if (!proper && /^[a-z]/.test(kind.value)) {
       problems.push(
         valueProblem(
@@ -212,6 +226,8 @@ function lintKubernetes(lines: Line[]): Problem[] {
           'warning'
         )
       );
+    } else {
+      properKind = proper ?? kind.value;
     }
   }
 
@@ -224,6 +240,18 @@ function lintKubernetes(lines: Line[]): Problem[] {
         'error'
       )
     );
+  } else if (apiVersion && properKind && KIND_INFO[properKind]) {
+    const expected = KIND_INFO[properKind];
+    if (!expected.includes(apiVersion.value)) {
+      problems.push(
+        valueProblem(
+          apiVersion,
+          `"${properKind}" belongs to apiVersion "${expected[0]}", not "${apiVersion.value}". The kind and apiVersion don't match, so the cluster won't recognize this resource.`,
+          'k8s-apiversion-mismatch',
+          'error'
+        )
+      );
+    }
   }
 
   return problems;
